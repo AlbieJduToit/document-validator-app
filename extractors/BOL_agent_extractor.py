@@ -17,7 +17,7 @@ from vertexai.generative_models import (
 
 # --- Configuration ---
 #load_dotenv()
-LOCATION = "us-central1"            
+LOCATION="us-central1"            
 MODEL_NAME="gemini-2.0-flash-001"
 
 
@@ -64,10 +64,14 @@ def run_bol_extraction_agent(
 
     # --- 2. Initialize Vertex AI with service account credentials ---
     try:
-        vertexai.init(project=project_id, location=LOCATION, credentials=creds)
+        vertexai.init(location=LOCATION, credentials=creds)
         print("Agent: Vertex AI initialized successfully with provided credentials.")
     except Exception as e:
         print(f"Agent ERROR: Failed to initialize Vertex AI client: {e}")
+        # Also print the type and details of the objects to see what they are
+        print(f"DEBUG: Type of project_id variable: {type(project_id)}")
+        print(f"DEBUG: Value of project_id variable: {project_id}")
+        print(f"DEBUG: Type of creds variable: {type(creds)}")
         return None
 
     # --- 3. Set up the Model with the Tool ---
