@@ -14,6 +14,7 @@ from extractors.PPECB_extractor import extract_ppecb_data
 import os
 from typing import Dict, Any, Optional
 import streamlit as st
+from google.oauth2 import service_account
 
 
 load_dotenv()
@@ -22,6 +23,16 @@ project_id = st.secrets["app_config"]["project_id"]
 location = st.secrets["app_config"]["location"]
 form_processor_id = st.secrets["app_config"]["form_processor_id"]
 layout_processor_id = st.secrets["app_config"]["layout_processor_id"]
+
+
+def get_google_creds():
+    """Creates Google credentials from Streamlit's secrets."""
+    creds_dict = st.secrets["google_credentials"]
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict,
+        scopes=['https://www.googleapis.com/auth/cloud-platform']
+    )
+    return creds
 
 def run_extraction_for_document(
     doc_type_key: str,
@@ -64,7 +75,13 @@ def run_extraction_for_document(
             mime_type="application/pdf"
         )
         text_doc = build_text_from_raw_layout(agent_document)
-        agent_extraction = run_bol_extraction_agent(text_doc)
+        google_credentials = get_google_creds()
+        agent_extraction = run_bol_extraction_agent(
+            ocr_text=text_doc,
+            project_id=project_id,
+            location=location,
+            creds=google_credentials
+        )
         final_result = consolidate_extractions(initial_extracted, agent_extraction)
         return final_result 
 

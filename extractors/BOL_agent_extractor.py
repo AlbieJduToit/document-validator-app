@@ -53,7 +53,12 @@ def submit_extracted_bol_data(
     return extracted_data
 
 
-def run_bol_extraction_agent(ocr_text: str) -> Optional[dict]:
+def run_bol_extraction_agent(
+    ocr_text: str, 
+    project_id: str, 
+    location: str, 
+    creds: service_account.Credentials
+) -> Optional[dict]:
     """
     Initializes the AI agent and runs the data extraction process.
     """
@@ -62,39 +67,10 @@ def run_bol_extraction_agent(ocr_text: str) -> Optional[dict]:
 
     # --- 2. Initialize Vertex AI with service account credentials ---
     try:
-        # Deployed on Streamlit Cloud: Try to access st.secrets
-        if hasattr(st, 'secrets'):
-            print("INFO: Found Streamlit secrets. Initializing with cloud credentials.")
-            creds_dict = st.secrets["google_credentials"]
-            project_id = creds_dict["project_id"]
-            creds = service_account.Credentials.from_service_account_info(
-                creds_dict, scopes=['https://www.googleapis.com/auth/cloud-platform']
-            )
-        else:
-            raise AttributeError # Force a jump to the except block if not on Streamlit
-    except (AttributeError, KeyError):
-        # Running Locally: Fall back to the .env file method
-        print("INFO: Streamlit secrets not found. Initializing with local .env credentials.")
-        try:
-            key_dict = create_keyfile_dict()
-            project_id = key_dict["project_id"]
-            creds = service_account.Credentials.from_service_account_info(
-                key_dict, scopes=['https://www.googleapis.com/auth/cloud-platform']
-            )
-        except Exception as e:
-            print(f"ERROR: Failed to initialize from local .env file: {e}")
-            return None
-
-    if not creds or not project_id:
-        print("ERROR: Could not create credentials. Halting agent.")
-        return None
-
-    # --- Initialize Vertex AI with the credentials we found ---
-    try:
-        vertexai.init(project=project_id, location=LOCATION, credentials=creds)
-        print("Vertex AI initialized successfully.")
+        vertexai.init(project=project_id, location=location, credentials=creds)
+        print("Agent: Vertex AI initialized successfully with provided credentials.")
     except Exception as e:
-        print(f"ERROR: Failed to initialize Vertex AI client: {e}")
+        print(f"Agent ERROR: Failed to initialize Vertex AI client: {e}")
         return None
 
     # --- 3. Set up the Model with the Tool ---
