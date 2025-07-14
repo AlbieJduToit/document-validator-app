@@ -3,7 +3,7 @@ import vertexai
 import streamlit as st
 from typing import List, Optional
 from dotenv import load_dotenv
-from processors.google_helper import create_keyfile_dict
+#from processors.google_helper import create_keyfile_dict
 from google.oauth2 import service_account
 
 from vertexai.generative_models import (
@@ -16,7 +16,7 @@ from vertexai.generative_models import (
 )
 
 # --- Configuration ---
-load_dotenv()
+#load_dotenv()
 LOCATION = "us-central1"            
 MODEL_NAME="gemini-2.0-flash-001"
 
@@ -62,8 +62,6 @@ def run_bol_extraction_agent(
     """
     Initializes the AI agent and runs the data extraction process.
     """
-    creds = None
-    project_id = None
 
     # --- 2. Initialize Vertex AI with service account credentials ---
     try:

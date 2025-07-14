@@ -11,7 +11,6 @@ from processors.json_formatter import build_text_from_raw_layout, consolidate_ex
 from extractors.BOL_agent_extractor import run_bol_extraction_agent
 from extractors.PL_extractor import extract_pl_data
 from extractors.PPECB_extractor import extract_ppecb_data
-import os
 from typing import Dict, Any, Optional
 import streamlit as st
 from google.oauth2 import service_account
