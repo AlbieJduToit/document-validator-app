@@ -1,8 +1,8 @@
 
 import vertexai
-import streamlit as st
+#import streamlit as st
 from typing import List, Optional
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 #from processors.google_helper import create_keyfile_dict
 from google.oauth2 import service_account
 
@@ -17,7 +17,7 @@ from vertexai.generative_models import (
 
 # --- Configuration ---
 #load_dotenv()
-# LOCATION = "us-central1"            
+LOCATION = "us-central1"            
 MODEL_NAME="gemini-2.0-flash-001"
 
 
@@ -64,7 +64,7 @@ def run_bol_extraction_agent(
 
     # --- 2. Initialize Vertex AI with service account credentials ---
     try:
-        vertexai.init(project=project_id, location="us-central1", credentials=creds)
+        vertexai.init(project=project_id, location=LOCATION, credentials=creds)
         print("Agent: Vertex AI initialized successfully with provided credentials.")
     except Exception as e:
         print(f"Agent ERROR: Failed to initialize Vertex AI client: {e}")
