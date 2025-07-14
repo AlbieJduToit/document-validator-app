@@ -1,6 +1,6 @@
 
 import vertexai
-import os
+import streamlit as st
 from typing import List, Optional
 from dotenv import load_dotenv
 from processors.google_helper import create_keyfile_dict
@@ -17,7 +17,7 @@ from vertexai.generative_models import (
 
 # --- Configuration ---
 load_dotenv()
-PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID")
+PROJECT_ID = st.secrets["app_config"]["project_id"]
 LOCATION = "us-central1"            
 MODEL_NAME="gemini-2.0-flash-001"
 
