@@ -78,7 +78,6 @@ def run_extraction_for_document(
         agent_extraction = run_bol_extraction_agent(
             ocr_text=text_doc,
             project_id=project_id,
-            location=location,
             creds=google_credentials
         )
         final_result = consolidate_extractions(initial_extracted, agent_extraction)
