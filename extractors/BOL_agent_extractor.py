@@ -1,6 +1,6 @@
 
 import vertexai
-#import streamlit as st
+import streamlit as st
 from typing import List, Optional
 #from dotenv import load_dotenv
 #from processors.google_helper import create_keyfile_dict
@@ -55,23 +55,49 @@ def submit_extracted_bol_data(
 
 def run_bol_extraction_agent(
     ocr_text: str, 
-    project_id: str,
-    creds: service_account.Credentials
+    project_id: str
 ) -> Optional[dict]:
     """
     Initializes the AI agent and runs the data extraction process.
     """
 
     # --- 2. Initialize Vertex AI with service account credentials ---
+    print("\n--- Inside run_bol_extraction_agent ---")
+    creds = None
+
     try:
-        vertexai.init(location=LOCATION, credentials=creds)
+        creds_dict = st.secrets["google_credentials"]
+        # Explicitly check the project_id from the credentials dictionary
+        if not creds_dict.get("project_id"):
+            print("AGENT FATAL DEBUG: 'project_id' key is MISSING from st.secrets['google_credentials']!")
+        
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict,
+            scopes=['https://www.googleapis.com/auth/cloud-platform']
+        )
+        print("AGENT DEBUG: Successfully created a new credentials object inside the agent.")
+        # This print statement is CRITICAL. Let's see what the object contains.
+        print(f"AGENT DEBUG: The project ID from within the new creds object is: '{creds.project_id}'")
+
+    except Exception as e:
+        print(f"AGENT FATAL ERROR: Failed to create credentials inside the agent. Details: {e}")
+        return None
+
+    # --- 2. Initialize Vertex AI (with extensive debugging prints) ---
+    print("\n--- Preparing to initialize Vertex AI ---")
+    print(f"DEBUG: project_id parameter value: '{project_id}' (Type: {type(project_id)})")
+    print(f"DEBUG: LOCATION parameter value: '{LOCATION}' (Type: {type(LOCATION)})")
+    print(f"DEBUG: creds object type: {type(creds)}")
+    
+    try:
+        # We will use the explicit project_id parameter again, as it's good practice.
+        vertexai.init(project=project_id, location=LOCATION, credentials=creds)
         print("Agent: Vertex AI initialized successfully with provided credentials.")
     except Exception as e:
+        # If it fails, we log the error and the state of our variables
         print(f"Agent ERROR: Failed to initialize Vertex AI client: {e}")
-        # Also print the type and details of the objects to see what they are
-        print(f"DEBUG: Type of project_id variable: {type(project_id)}")
-        print(f"DEBUG: Value of project_id variable: {project_id}")
-        print(f"DEBUG: Type of creds variable: {type(creds)}")
+        if creds:
+             print(f"DEBUG on FAIL: Credentials object's project_id was: '{creds.project_id}'")
         return None
 
     # --- 3. Set up the Model with the Tool ---

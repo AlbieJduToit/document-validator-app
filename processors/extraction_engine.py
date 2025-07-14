@@ -24,31 +24,6 @@ form_processor_id = st.secrets["app_config"]["form_processor_id"]
 layout_processor_id = st.secrets["app_config"]["layout_processor_id"]
 
 
-def get_google_creds():
-    """Creates Google credentials from Streamlit's secrets."""
-    
-    # 1. Check if the entire secrets section exists
-    if "google_credentials" not in st.secrets:
-        st.error("FATAL: The [google_credentials] section is missing from your Streamlit secrets.")
-        print("FATAL: The [google_credentials] section is missing from your Streamlit secrets.")
-        return None
-
-    creds_dict = st.secrets["google_credentials"]
-
-    # 2. Add this new validation step to check for the project_id within the credentials
-    if not creds_dict.get("project_id"):
-        st.error("FATAL: The 'project_id' key is missing or empty within the [google_credentials] section of your secrets.")
-        print("FATAL: The 'project_id' key is missing or empty within the [google_credentials] section.")
-        return None
-    
-    # If validation passes, proceed as normal
-    print("Successfully found project_id in [google_credentials]. Creating credentials object...")
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict,
-        scopes=['https://www.googleapis.com/auth/cloud-platform']
-    )
-    return creds
-
 def run_extraction_for_document(
     doc_type_key: str,
     file_bytes: bytes,
@@ -90,11 +65,9 @@ def run_extraction_for_document(
             mime_type="application/pdf"
         )
         text_doc = build_text_from_raw_layout(agent_document)
-        google_credentials = get_google_creds()
         agent_extraction = run_bol_extraction_agent(
             ocr_text=text_doc,
-            project_id=project_id,
-            creds=google_credentials
+            project_id=project_id
         )
         final_result = consolidate_extractions(initial_extracted, agent_extraction)
         return final_result 
