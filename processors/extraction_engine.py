@@ -66,8 +66,7 @@ def run_extraction_for_document(
         )
         text_doc = build_text_from_raw_layout(agent_document)
         agent_extraction = run_bol_extraction_agent(
-            ocr_text=text_doc,
-            project_id=project_id
+            ocr_text=text_doc
         )
         final_result = consolidate_extractions(initial_extracted, agent_extraction)
         return final_result 
