@@ -58,7 +58,10 @@ def extract_bol_data(document):
     start_keyword="Shipper",
     stop_keywords=["Consignee"],
     horizontal_constraint="left"
-    )
+)
+    # NEW: fallback if geometry failed
+    if not raw_exporter:
+        raw_exporter = extract_bol_shipper_by_regex(document)
     extracted_data["exporter_address"] = clean_exporter_address_block(raw_exporter)
 
     # These are junk lines to exclude from OCR output, since doc is standardised these will always exist and can be hard coded
@@ -842,6 +845,45 @@ def clean_exporter_address_block(block: Optional[str]) -> Optional[str]:
             continue
         # Lines that are just a phone number like "+27 ..." etc.
         if re.match(r'^\+?\d', s) and not re.search(r'[A-Za-z]', s):
+            continue
+
+        cleaned_lines.append(s)
+
+    return "\n".join(cleaned_lines) if cleaned_lines else None
+
+def extract_bol_shipper_by_regex(document) -> Optional[str]:
+    """
+    Fallback: extract shipper/exporter block purely from text,
+    between the main 'Shipper (...)' header and the next 'Consignee' header.
+    """
+    text = document.text
+
+    # Capture everything after the Shipper header up to the Consignee header
+    m = re.search(
+        r"Shipper\s*\(.*?\)[^\n]*\n(.*?)(?=\nConsignee\s*\(|\nNotify Party|\nThis contract is subject)",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        return None
+
+    block = m.group(1).strip()
+
+    # Drop lines we know are not part of the postal address
+    EXCLUDE_PREFIXES = [
+        r"Booking No\.?", 
+        r"Export references",
+        r"Svc Contract",
+    ]
+
+    cleaned_lines = []
+    for ln in block.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+
+        # Skip noisy lines like "Export references", "Svc Contract", etc.
+        if any(re.match(pat, s, re.IGNORECASE) for pat in EXCLUDE_PREFIXES):
             continue
 
         cleaned_lines.append(s)

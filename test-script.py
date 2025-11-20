@@ -18,6 +18,8 @@ import json
 #from extractors.PL_extractor import get_form_key_value_pairs
 import logging
 import sys
+import io
+from PyPDF2 import PdfReader, PdfWriter
 
 load_dotenv()
 
@@ -34,12 +36,45 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-local_pdf = "Draft SWB (12).pdf"
+def trim_pdf_to_max_pages(file_bytes: bytes, max_pages: int) -> bytes:
+    """
+    Trims a PDF to a maximum number of pages.
+
+    Args:
+        file_bytes: The original PDF file content as bytes.
+        max_pages: The maximum number of pages to keep.
+
+    Returns:
+        The new PDF file content as bytes (trimmed if necessary).
+    """
+    try:
+        pdf_stream = io.BytesIO(file_bytes)
+        reader = PdfReader(pdf_stream)
+        
+        # No trimming needed
+        if len(reader.pages) <= max_pages:
+            return file_bytes
+
+        writer = PdfWriter()
+        for i in range(min(len(reader.pages), max_pages)):
+            writer.add_page(reader.pages[i])
+
+        output_stream = io.BytesIO()
+        writer.write(output_stream)
+        return output_stream.getvalue()
+    except Exception as e:
+        # On any error, just return the original bytes
+        return file_bytes
+
+
+local_pdf = "Waybill.pdf"
 
 logger.info(f"Reading file bytes from: {local_pdf}")
 with open(local_pdf, "rb") as f:
     pdf_bytes = f.read()
 logger.info(f"Read {len(pdf_bytes)} bytes.")
+
+pdf_bytes = trim_pdf_to_max_pages(pdf_bytes, 3)
 
 agent_document = process_document_sample(
     project_id=project_id,
@@ -48,9 +83,9 @@ agent_document = process_document_sample(
     content_bytes=pdf_bytes,  
     mime_type="application/pdf"
 )
+document_text = agent_document.text
+print(document_text)
 
 extracted = extract_bol_data(agent_document)
-extracted_agent = run_bol_extraction_agent(agent_document, project_id)
 
 print(json.dumps(extracted, indent=2))
-print(json.dumps(extracted_agent, indent=2))
