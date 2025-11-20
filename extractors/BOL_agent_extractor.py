@@ -1,29 +1,15 @@
-
-import vertexai
+import json
 import streamlit as st
 from typing import List, Optional
-#from dotenv import load_dotenv
-#from processors.google_helper import create_keyfile_dict
-from google.oauth2 import service_account
 
-from vertexai.generative_models import (
-    GenerativeModel,
-    Tool,
-    FunctionDeclaration,
-    HarmCategory, # Used to check security filters when gemini 2.5 stopped workign randomly
-    HarmBlockThreshold, # Used to check security filters when gemini 2.5 stopped workign randomly
-    ToolConfig,
-)
+from openai import OpenAI
 
 # --- Configuration ---
-#load_dotenv()
-LOCATION="us-central1"            
-MODEL_NAME="gemini-2.0-flash-001"
+OPENAI_MODEL = "gpt-4.1-mini"  # or "gpt-4.1", etc.
 
 
-# --- 1. Define the Function for the AI to Call (The Tool) ---
-# This function defines the structure of the desired JSON output.
-# The docstrings and type hints are CRITICAL for the AI to understand its job.
+# --- 1. Define the Function Schema (Tool) & Optional Local Impl ---
+
 def submit_extracted_bol_data(
     container_number: Optional[List[str]] = None,
     total_cartons: Optional[int] = None,
@@ -42,7 +28,6 @@ def submit_extracted_bol_data(
     Returns:
         A dictionary confirming the data that was received.
     """
-
     extracted_data = {
         "container_number": container_number,
         "total_cartons": total_cartons,
@@ -53,126 +38,120 @@ def submit_extracted_bol_data(
     return extracted_data
 
 
+# OpenAI tool (function) schema corresponding to submit_extracted_bol_data
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_extracted_bol_data",
+            "description": "Submits the extracted data from a Bill of Lading document.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "container_number": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "A list of all unique container numbers found.",
+                    },
+                    "total_cartons": {
+                        "type": "integer",
+                        "description": "The total number of cartons or packages.",
+                    },
+                    "total_gross_mass_kg": {
+                        "type": "number",
+                        "description": "The total gross weight in kilograms (KGS).",
+                    },
+                    "total_nett_mass_kg": {
+                        "type": "number",
+                        "description": "The total net weight in kilograms (KGS).",
+                    },
+                },
+                "required": [],
+            },
+        },
+    }
+]
+
+
 def run_bol_extraction_agent(
-    ocr_text: str, 
-    project_id: str
+    ocr_text: str,
 ) -> Optional[dict]:
     """
-    Initializes the AI agent and runs the data extraction process.
+    Initializes the AI agent (ChatGPT) and runs the data extraction process.
     """
 
-    # --- 2. Initialize Vertex AI with service account credentials ---
-    print("\n--- Inside run_bol_extraction_agent ---")
-    creds = None
+    print("\n--- Inside run_bol_extraction_agent (OpenAI / ChatGPT version) ---")
 
-    try:
-        creds_dict = st.secrets["google_credentials"]
-        # Explicitly check the project_id from the credentials dictionary
-        if not creds_dict.get("project_id"):
-            print("AGENT FATAL DEBUG: 'project_id' key is MISSING from st.secrets['google_credentials']!")
-        
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict,
-            scopes=['https://www.googleapis.com/auth/cloud-platform']
-        )
-        print("AGENT DEBUG: Successfully created a new credentials object inside the agent.")
-        # This print statement is CRITICAL. Let's see what the object contains.
-        print(f"AGENT DEBUG: The project ID from within the new creds object is: '{creds.project_id}'")
+    # --- Init OpenAI client ---
+    # You can also rely on OPENAI_API_KEY env var instead of st.secrets if you prefer.
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-    except Exception as e:
-        print(f"AGENT FATAL ERROR: Failed to create credentials inside the agent. Details: {e}")
-        return None
-
-    # --- 2. Initialize Vertex AI (with extensive debugging prints) ---
-    print("\n--- Preparing to initialize Vertex AI ---")
-    print(f"DEBUG: project_id parameter value: '{project_id}' (Type: {type(project_id)})")
-    print(f"DEBUG: LOCATION parameter value: '{LOCATION}' (Type: {type(LOCATION)})")
-    print(f"DEBUG: creds object type: {type(creds)}")
-    
-    try:
-        # We will use the explicit project_id parameter again, as it's good practice.
-        vertexai.init(project=project_id, location=LOCATION, credentials=creds)
-        print("Agent: Vertex AI initialized successfully with provided credentials.")
-    except Exception as e:
-        # If it fails, we log the error and the state of our variables
-        print(f"Agent ERROR: Failed to initialize Vertex AI client: {e}")
-        if creds:
-             print(f"DEBUG on FAIL: Credentials object's project_id was: '{creds.project_id}'")
-        return None
-
-    # --- 3. Set up the Model with the Tool ---
-    # Declare the function as a tool the model can use
-    extraction_tool = Tool(
-        function_declarations=[
-            FunctionDeclaration.from_func(submit_extracted_bol_data)
-        ]
+    # --- Prompt (role & instructions) ---
+    system_prompt = (
+        "You are an expert data extraction agent specializing in logistics and "
+        "shipping documents. Your job is to carefully extract structured data "
+        "from Bill of Lading (BOL) text."
     )
 
-    # This tells the model not to block content for any of the main safety categories.
-    # This was used when gemini 2.5 pro randomly stopped working
-    safety_settings = {
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-    }
+    user_prompt = f"""
+Analyze the following document text and call the `submit_extracted_bol_data` function
+with the extracted values.
 
-    # Initialize the Gemini model, telling it about the available tool
-    model = GenerativeModel(MODEL_NAME, tools=[extraction_tool])
+Extraction Rules:
+- container_number: Find all unique 11-character alphanumeric container numbers
+  (format: 4 letters, 7 numbers). Return a list of strings.
+- total_cartons: Find the total number of cartons or packages. Return an integer.
+- total_gross_mass_kg: Find the total gross weight in Kilograms (KGS). Return a float.
+- total_nett_mass_kg: Find the total net weight in Kilograms (KGS). Return a float.
+- Use null for any field that cannot be found.
 
-    tool_config = ToolConfig(
-        function_calling_config=ToolConfig.FunctionCallingConfig(
-            # Mode.ANY means the model MUST call one of the allowed functions.
-            mode=ToolConfig.FunctionCallingConfig.Mode.ANY,
-            # Specify the exact function name it is allowed to call.
-            allowed_function_names=["submit_extracted_bol_data"],
-        )
-    )
+--- DOCUMENT TEXT TO ANALYZE ---
+{ocr_text}
+--- END OF DOCUMENT ---
+    """.strip()
 
-    # --- 4. Craft the Master Prompt ---
-    # This prompt tells the AI its role, its goal, and how to use the tool.
-    prompt = f"""
-    You are an expert data extraction agent specializing in logistics and shipping documents.
-    Analyze the following document text and call the `submit_extracted_bol_data` function with the extracted values.
+    print("\nSending prompt and document text to ChatGPT...")
 
-    **Extraction Rules:**
-    - container_number: Find all unique 11-character alphanumeric container numbers (format: 4 letters, 7 numbers). Return a list of strings.
-    - total_cartons: Find the total number of cartons or packages. Return an integer.
-    - total_gross_mass_kg: Find the total gross weight in Kilograms (KGS). Return a float.
-    - total_nett_mass_kg: Find the total net weight in Kilograms (KGS). Return a float.
-    - Use null for any field that cannot be found.
-
-    --- DOCUMENT TEXT TO ANALYZE ---
-    {ocr_text}
-    --- END OF DOCUMENT ---
-    """
-
-    print("\nSending prompt and document text to Gemini...")
-
-    # --- 5. Generate Content and Trigger Function Call ---
     try:
-        response = model.generate_content(
-            prompt, 
-            safety_settings=safety_settings,
-            tool_config=tool_config 
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            tools=TOOLS,
+            # Force the model to call this specific function
+            tool_choice={
+                "type": "function",
+                "function": {"name": "submit_extracted_bol_data"},
+            },
         )
 
-        # --- 7. Process the Response ---
-        function_call = response.candidates[0].content.parts[0].function_call
-        
-        if function_call.name == "submit_extracted_bol_data":
-            print(f"SUCCESS: Gemini successfully called '{function_call.name}'.\n")
-            final_data = dict(function_call.args)
-            return final_data
-        else:
-            print(f"ERROR: Unexpected function called: {function_call.name}")
+        message = response.choices[0].message
+
+        if not message.tool_calls:
+            print("ERROR: Model did not call any tool.")
             return None
 
+        tool_call = message.tool_calls[0]
+        func_name = tool_call.function.name
+        args_json = tool_call.function.arguments
+
+        if func_name != "submit_extracted_bol_data":
+            print(f"ERROR: Unexpected function called: {func_name}")
+            return None
+
+        print(f"SUCCESS: ChatGPT successfully called '{func_name}'.\n")
+
+        # Parse JSON arguments from the tool call
+        final_data = json.loads(args_json)
+
+        # Optional: actually invoke the local Python function as well
+        submit_extracted_bol_data(**final_data)
+
+        return final_data
+
     except Exception as e:
-        # Catch all errors related to accessing the response structure
         print("ERROR: Failed to get a valid function call from the model.")
         print(f"Details: {e}")
-        print("--- Full Response Object for Debugging ---")
-        print(repr(response))
-        print("------------------------------------------")
         return None

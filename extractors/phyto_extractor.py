@@ -194,66 +194,122 @@ def extract_consignee_address_phyto(document: dict) -> Optional[str]:
 
 def extract_container_phyto(document: dict) -> Optional[str]:
     """
-    Extracts the container number from under the 'Distinguishing Marks' header
-    on a pre-cleaned Phyto document.
+    Extracts the container number from a Phyto document.
+
+    Strategy:
+    1) Try geometry-based extraction under '4. Distinguishing Marks'
+       (right half of the page, between '4. Distinguishing Marks' and 'conveyance').
+       If we find a container-like code (e.g. TEMU9530408), return it.
+       If we only see 'NONE' or no code, fall back.
+    2) Fallback: look in the 'Additional Information' line for a container number.
+    3) Last resort: first container-like pattern anywhere in the document text.
     """
     if not document.pages:
         return None
-    
+
     document_text = document.text
 
-    # --- Iterate through all pages to find the one with the data ---
+    # ------------------
+    # 1) GEOMETRIC SEARCH UNDER "Distinguishing Marks"
+    # ------------------
     for page in document.pages:
-        # --- Step 1 & 2: Find the top and bottom anchors ---
         start_anchor = find_line_by_substring(page, "4. Distinguishing Marks", document_text)
-        # Using "conveyance" as the stop keyword is very reliable
         stop_below_anchor = find_line_by_substring(page, "conveyance", document_text)
-        
+
         if start_anchor and stop_below_anchor:
             print(f"Found required marks anchors on Page {page.page_number}.")
-            
-            # --- Step 3 & 4: Define the search box ---
+
             start_bbox = start_anchor.layout.bounding_poly
             stop_below_bbox = stop_below_anchor.layout.bounding_poly
-            
+
             # Vertical boundaries
             search_top_y = max(v.y for v in start_bbox.normalized_vertices)
             search_bottom_y = min(v.y for v in stop_below_bbox.normalized_vertices)
-            
-            # Horizontal boundaries - a simple rule for the right half of the page
-            search_left_x = 0.5 # Start searching from the middle of the page
-            search_right_x = 1.0 # Go all the way to the right edge
-            
-            print(f"Defined search box: y=({search_top_y:.3f}, {search_bottom_y:.3f}), x=({search_left_x:.3f}, {search_right_x:.3f})")
 
-            # --- Step 5: Collect the single line within the box ---
-            found_lines = []
+            # Right half of the page
+            search_left_x = 0.5
+            search_right_x = 1.0
+
+            print(
+                f"Defined search box: y=({search_top_y:.3f}, {search_bottom_y:.3f}), "
+                f"x=({search_left_x:.3f}, {search_right_x:.3f})"
+            )
+
+            found_lines: list[str] = []
             for line in page.lines:
-                if line == start_anchor or line == stop_below_anchor:
+                if line in (start_anchor, stop_below_anchor):
                     continue
 
                 line_bbox = line.layout.bounding_poly
-                line_center_y = (min(v.y for v in line_bbox.normalized_vertices) + max(v.y for v in line_bbox.normalized_vertices)) / 2.0
-                line_center_x = (min(v.x for v in line_bbox.normalized_vertices) + max(v.x for v in line_bbox.normalized_vertices)) / 2.0
-                
-                if search_top_y < line_center_y < search_bottom_y and \
-                   search_left_x < line_center_x < search_right_x:
-                   
+                line_center_y = (
+                    min(v.y for v in line_bbox.normalized_vertices)
+                    + max(v.y for v in line_bbox.normalized_vertices)
+                ) / 2.0
+                line_center_x = (
+                    min(v.x for v in line_bbox.normalized_vertices)
+                    + max(v.x for v in line_bbox.normalized_vertices)
+                ) / 2.0
+
+                if (
+                    search_top_y < line_center_y < search_bottom_y
+                    and search_left_x < line_center_x < search_right_x
+                ):
                     line_text = get_text(line.layout.text_anchor, document_text).strip()
                     if line_text:
                         found_lines.append(line_text)
 
-            # Since we expect only one line, we return the first one we find.
             if found_lines:
-                container_number = found_lines[0]
-                print(f"SUCCESS: Extracted Distinguishing Marks: {container_number}")
-                return container_number
+                combined = " ".join(found_lines)
+                print(f"Distinguishing Marks block text: '{combined}'")
+
+                # Try to find a container-like code in the marks block
+                m = re.search(r"[A-Z]{4}\d{7}", combined)
+                if m:
+                    container_number = m.group(0)
+                    print(f"SUCCESS: Extracted container from marks block: {container_number}")
+                    return container_number
+
+                # If it's literally 'NONE', don't treat that as a container number
+                if combined.strip().upper() == "NONE":
+                    print("Marks block is 'NONE' – falling back to Additional Information / regex.")
+                else:
+                    # Non-empty but no container pattern: still fall back
+                    print("Marks block has no container-like pattern – falling back.")
             else:
                 print("No line found within the marks search box. Checking next page.")
-                continue
+                # continue to next page / fallback
 
-    print("Could not find both 'Marks' and 'Conveyance' anchors on any page.")
+    # ------------------
+    # 2) FALLBACK: "Additional Information" LINE
+    # ------------------
+    # Example line:
+    # "15. Additional Information:\nTEMU9530408, SEAL NO: FX35960860"
+    m_info = re.search(
+        r"Additional Information:\s*([^\n]*)",
+        document_text,
+        re.IGNORECASE,
+    )
+    if m_info:
+        info_line = m_info.group(1).strip()
+        print(f"Found 'Additional Information' line: '{info_line}'")
+        m_cont = re.search(r"[A-Z]{4}\d{7}", info_line)
+        if m_cont:
+            container_number = m_cont.group(0)
+            print(f"SUCCESS: Extracted container from Additional Information: {container_number}")
+            return container_number
+
+    # ------------------
+    # 3) LAST RESORT: FIRST CONTAINER-LIKE PATTERN ANYWHERE
+    # ------------------
+    m_any = re.search(r"[A-Z]{4}\d{7}", document_text)
+    if m_any:
+        container_number = m_any.group(0)
+        print(f"SUCCESS (fallback): Extracted first container-like pattern: {container_number}")
+        return container_number
+
+    print("Could not find a container number in Phyto document.")
     return None
+
 
 def extract_point_of_entry(document: dict) -> Optional[str]:
     """
@@ -389,7 +445,7 @@ def extract_phyto_total_cartons(document: dict) -> Optional[str]:
 def extract_phyto_weights(document: dict) -> Dict[str, Optional[str]]:
     """
     Extracts net and gross weights by finding the start and end anchors and
-    analyzing the raw text block between them. This is the most robust method.
+    analyzing the raw text block between them.
     """
     results = {"gross": None, "net": None}
     if not document.pages:
@@ -397,41 +453,45 @@ def extract_phyto_weights(document: dict) -> Dict[str, Optional[str]]:
     
     document_text = document.text
 
-    # Iterate through all pages to find the one with the data
     for page in document.pages:
-        # --- Step 1: Find the start and end anchors ---
+        # Step 1: Find the start and end anchors
         start_anchor = find_line_by_substring(page, "8. Name of", document_text)
         stop_below_anchor = find_line_by_substring(page, "9. Botanical", document_text)
         
         if start_anchor and stop_below_anchor:
             print(f"Found required weight anchors on Page {page.page_number}.")
-            
-            # --- Step 2: Get the text indices from the anchors ---
-            # Get the character index where the start anchor's text ends
-            start_index = start_anchor.layout.text_anchor.text_segments[0].end_index
-            
-            # Get the character index where the stop anchor's text begins
-            end_index = stop_below_anchor.layout.text_anchor.text_segments[0].start_index
-            
-            # --- Step 3: Extract the block of text between the anchors ---
-            text_block = document_text[start_index:end_index].strip()
-            cleaned_text_block = text_block.replace('\n', ' ')
-            print(f" - Analyzing text block: '{cleaned_text_block}'")
 
-            # --- Step 4: Parse weights using two simple, robust regexes ---
-            # Regex 1: Find the number preceding "KG NETT"
-            net_match = re.search(r'([\d.]+)\s*KG\s*NETT', text_block, re.IGNORECASE)
+            # Step 2: Get indices for the block BETWEEN the two anchors
+            start_index = start_anchor.layout.text_anchor.text_segments[0].end_index
+            end_index = stop_below_anchor.layout.text_anchor.text_segments[0].start_index
+
+            # Step 3: Extract and normalize the text block
+            text_block = document_text[start_index:end_index]
+            cleaned = re.sub(r"\s+", " ", text_block).strip()
+            print(f" - Analyzing text block: '{cleaned}'")
+
+            # Step 4: Regexes (allow KG or KGS, commas or dots)
+            # NETT
+            net_match = re.search(
+                r'([\d.,]+)\s*KG[S]?\s*NETT',
+                cleaned,
+                re.IGNORECASE
+            )
             if net_match:
-                results["net"] = net_match.group(1)
+                results["net"] = net_match.group(1).replace(",", "")
                 print(f"  - Found Net Weight: {results['net']}")
 
-            # Regex 2: Find the number preceding "KG GROSS"
-            gross_match = re.search(r'([\d.]+)\s*KG\s*GROSS', text_block, re.IGNORECASE)
+            # GROSS
+            gross_match = re.search(
+                r'([\d.,]+)\s*KG[S]?\s*GROSS',
+                cleaned,
+                re.IGNORECASE
+            )
             if gross_match:
-                results["gross"] = gross_match.group(1)
+                results["gross"] = gross_match.group(1).replace(",", "")
                 print(f"  - Found Gross Weight: {results['gross']}")
-            
-            # If we found at least one value, we can return.
+
+            # If we found at least one, we’re done
             if results["net"] or results["gross"]:
                 return results
 

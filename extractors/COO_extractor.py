@@ -316,11 +316,12 @@ def extract_coo_gross_mass(document: dict) -> Optional[str]:
                 print(f"  - Analyzing text block: '{full_text}'")
                 
                 # The flexible regex to find the number associated with "GROSS"
-                match = re.search(r'([\d,.]+)\s*KGS?\s*GROSS', full_text, re.IGNORECASE)
+                match = re.search(r'([\d\s.,]+)\s*KGS?\s*GROSS', full_text, re.IGNORECASE)
                 
                 if match:
-                    # Get the captured number and remove any commas for clean output
-                    gross_mass = match.group(1).replace(',', '')
+                    raw_number = match.group(1).strip()
+                    # Remove spaces and commas to normalise thousand separators
+                    gross_mass = raw_number.replace(" ", "").replace(",", "")
                     print(f"SUCCESS: Extracted Gross Mass: {gross_mass}")
                     return gross_mass
                 else:

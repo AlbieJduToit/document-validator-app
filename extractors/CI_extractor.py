@@ -128,16 +128,18 @@ def extract_exporter_address(document: dict) -> Optional[str]:
             continue
 
         line_bbox = line.layout.bounding_poly
-        line_left_x = min(v.x for v in line_bbox.normalized_vertices)
-        line_center_x = (min(v.x for v in line_bbox.normalized_vertices) + max(v.x for v in line_bbox.normalized_vertices)) / 2.0
+        line_center_x = (
+            min(v.x for v in line_bbox.normalized_vertices)
+            + max(v.x for v in line_bbox.normalized_vertices)
+        ) / 2.0
         line_bottom_y = max(v.y for v in line_bbox.normalized_vertices)
-        
-        # Check if the line is: 1. Above anchor, 2. Right of left boundary, 3. Centered in column
+
+        # 1) Above the Reg No line
         is_above = line_bottom_y < bottom_anchor_top_y
-        respects_left_boundary = line_left_x >= strict_left_boundary_x
+        # 2) Reasonably within the same column
         is_centered = abs(line_center_x - column_center_x) < horizontal_tolerance
-        
-        if is_above and respects_left_boundary and is_centered:
+
+        if is_above and is_centered:
             candidate_lines.append(line)
 
     if len(candidate_lines) < 2:

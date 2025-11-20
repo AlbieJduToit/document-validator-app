@@ -53,12 +53,13 @@ def extract_bol_data(document):
         "total_net_mass_kg": None
     }
 
-    extracted_data["exporter_address"] = extract_block_between_headers(
-        document,
-        start_keyword="Shipper",
-        stop_keywords=["Consignee"],
-        horizontal_constraint="left"
+    raw_exporter = extract_block_between_headers(
+    document,
+    start_keyword="Shipper",
+    stop_keywords=["Consignee"],
+    horizontal_constraint="left"
     )
+    extracted_data["exporter_address"] = clean_exporter_address_block(raw_exporter)
 
     # These are junk lines to exclude from OCR output, since doc is standardised these will always exist and can be hard coded
     consignee_exclusions = [
@@ -74,6 +75,13 @@ def extract_bol_data(document):
         exclude_keywords=consignee_exclusions
     )
 
+    # Fallback: text-only regex if geometric extraction failed
+    if not extracted_data["consignee_details"]:
+        alt_consignee = extract_bol_consignee_by_regex(document)
+        alt_consignee = extend_consignee_with_contact_lines(document, alt_consignee)
+        if alt_consignee:
+            extracted_data["consignee_details"] = alt_consignee
+
     # More junk lines
     notify_exclusions = [
         "Clause 20)" 
@@ -86,6 +94,13 @@ def extract_bol_data(document):
         horizontal_constraint="left",
         exclude_keywords=notify_exclusions
     )
+
+    # Fallback: text-only regex if geometric extraction failed
+    if not extracted_data["notify_party_details"]:
+        alt_notify = extract_bol_notify_by_regex(document)
+        if alt_notify:
+            extracted_data["notify_party_details"] = alt_notify
+
     transport_details = extract_bol_vessel_voyage(document)
     extracted_data["vessel_name"] = transport_details.get("vessel_name")
     extracted_data["voyage"] = transport_details.get("voyage")
@@ -95,18 +110,61 @@ def extract_bol_data(document):
 
 def find_line_by_substring(page, substring: str, document_text: str):
     """
-    Finds the first line on a page containing a specific substring,
-    ignoring case.
+    Finds the most likely header line containing a specific substring:
+    - Prefer exact match (line == substring, ignoring case)
+    - Then prefer lines that start with the keyword (e.g. 'Shipper ...')
+      and are not possessive like 'SHIPPER'S ...'
+    - Finally, fall back to the shortest matching line.
     """
+    target = substring.lower()
+    candidates = []
+
     for line in page.lines:
-        line_text = get_text(line.layout.text_anchor, document_text)
-        
-        # Use re.search with the IGNORECASE flag instead of a simple 'in' check.
-        # This will match 'Shipper', 'SHIPPER', 'shipper', etc.
-        if re.search(substring, line_text, re.IGNORECASE):
-            return line
-            
-    return None
+        line_text = get_text(line.layout.text_anchor, document_text).strip()
+        if not line_text:
+            continue
+
+        lt = line_text.lower()
+        if target in lt:
+            candidates.append({
+                "line": line,
+                "text": line_text,
+                "lt": lt,
+                "exact": lt == target,
+                "starts_with": lt.startswith(target),
+                # Handle cases like "SHIPPER'S LOAD..." (we usually want to avoid these as anchors)
+                "has_possessive": (target + "'s") in lt,
+            })
+
+    if not candidates:
+        return None
+
+    # 1) Prefer exact match (e.g. 'Vessel')
+    exacts = [c for c in candidates if c["exact"]]
+    if exacts:
+        # If more than one, choose the shortest line
+        best = min(exacts, key=lambda c: len(c["text"]))
+        return best["line"]
+
+    # 2) Prefer lines that start with the keyword and are NOT possessive
+    #    ('Shipper ...' yes, 'SHIPPER'S LOAD...' no)
+    starts_clean = [
+        c for c in candidates
+        if c["starts_with"] and not c["has_possessive"]
+    ]
+    if starts_clean:
+        best = min(starts_clean, key=lambda c: len(c["text"]))
+        return best["line"]
+
+    # 3) Then allow starts_with even if possessive, if nothing else found
+    starts_any = [c for c in candidates if c["starts_with"]]
+    if starts_any:
+        best = min(starts_any, key=lambda c: len(c["text"]))
+        return best["line"]
+
+    # 4) Fallback: shortest line containing the keyword
+    best = min(candidates, key=lambda c: len(c["text"]))
+    return best["line"]
 
 def extract_block_between_headers(
     document: dict, 
@@ -364,8 +422,10 @@ def find_value_for_header_final(page, document_text: str, keyword: str) -> Optio
 
 def extract_bol_vessel_voyage(document: dict) -> Dict[str, Optional[str]]:
     """
-    The definitive master function using the new "find nearby or below" helper
-    and the correct "Vessel First" waterfall logic.
+    Master function:
+    1) Try geometry-based header/value logic (current behaviour).
+    2) If vessel looks implausible, fall back fully to text regex.
+    3) NEW: If voyage is still missing, use text regex to backfill just the voyage.
     """
     results = {"vessel_name": None, "voyage": None}
     if not document.pages:
@@ -378,37 +438,60 @@ def extract_bol_vessel_voyage(document: dict) -> Dict[str, Optional[str]]:
     
     vessel_candidate_text = find_value_for_header_final(page, document_text, "Vessel")
     
-    if not vessel_candidate_text:
-        print("Could not find any value for the 'Vessel' keyword.")
-        return results
-
-    print(f"  - Found vessel candidate text: '{vessel_candidate_text}'")
-
-    voyage_code_in_vessel = find_voyage_code_final(vessel_candidate_text)
-    
-    if voyage_code_in_vessel:
-        results["voyage"] = voyage_code_in_vessel
-        results["vessel_name"] = vessel_candidate_text.replace(voyage_code_in_vessel, "").strip(' -')
-        print(f"SUCCESS (Merged Field): Vessel='{results['vessel_name']}', Voyage='{results['voyage']}'")
-    else:
-        results["vessel_name"] = vessel_candidate_text
-        print(f"  - No voyage code in vessel string. Now searching for separate voyage value...")
+    if vessel_candidate_text:
+        print(f"  - Found vessel candidate text: '{vessel_candidate_text}'")
+        voyage_code_in_vessel = find_voyage_code_final(vessel_candidate_text)
         
-        voyage_candidate_text = find_value_for_header_final(page, document_text, "Voyage-No")
-        if not voyage_candidate_text:
-            voyage_candidate_text = find_value_for_header_final(page, document_text, "Voy")
-        
-        voyage_code = find_voyage_code_final(voyage_candidate_text)
-        
-        if voyage_code:
-            results["voyage"] = voyage_code
-            print(f"SUCCESS (Separate Fields): Vessel='{results['vessel_name']}', Voyage='{results['voyage']}'")
+        if voyage_code_in_vessel:
+            results["voyage"] = voyage_code_in_vessel
+            results["vessel_name"] = vessel_candidate_text.replace(voyage_code_in_vessel, "").strip(' -')
+            print(f"SUCCESS (Merged Field): Vessel='{results['vessel_name']}', Voyage='{results['voyage']}'")
         else:
-            print(f"  - Found text '{voyage_candidate_text}' but it contains no valid voyage code. Discarding.")
-            results["voyage"] = None
-            print(f"SUCCESS (Vessel Only): Vessel='{results['vessel_name']}', Voyage='{results['voyage']}'")
-        
+            results["vessel_name"] = vessel_candidate_text
+            print(f"  - No voyage code in vessel string. Now searching for separate voyage value...")
+            
+            voyage_candidate_text = find_value_for_header_final(page, document_text, "Voyage-No")
+            if not voyage_candidate_text:
+                voyage_candidate_text = find_value_for_header_final(page, document_text, "Voy")
+            
+            voyage_code = find_voyage_code_final(voyage_candidate_text)
+            
+            if voyage_code:
+                results["voyage"] = voyage_code
+                print(f"SUCCESS (Separate Fields): Vessel='{results['vessel_name']}', Voyage='{results['voyage']}'")
+            else:
+                print(f"  - Found text '{voyage_candidate_text}' but it contains no valid voyage code. Discarding.")
+                results["voyage"] = None
+                print(f"SUCCESS (Vessel Only): Vessel='{results['vessel_name']}', Voyage='{results['voyage']}'")
+    else:
+        print("Could not find any value for the 'Vessel' keyword using geometry-based search.")
+
+    # --- Existing sanity check: if vessel looks weird, rely fully on regex ---
+    if not is_plausible_vessel_name(results["vessel_name"]):
+        print("Vessel candidate looks implausible. Falling back to text-based regex extractor...")
+        regex_result = extract_bol_vessel_voyage_regex(document)
+        if regex_result.get("vessel_name"):
+            results["vessel_name"] = regex_result["vessel_name"]
+        if regex_result.get("voyage"):
+            results["voyage"] = regex_result["voyage"]
+
+    # --- NEW: If voyage is still missing, use regex JUST to backfill voyage ---
+    if results["voyage"] is None:
+        print("Voyage code still missing after geometry. Trying regex-based voyage extraction...")
+        regex_result = extract_bol_vessel_voyage_regex(document)
+        # Only overwrite vessel if we never got one from geometry
+        if not results["vessel_name"] and regex_result.get("vessel_name"):
+            results["vessel_name"] = regex_result["vessel_name"]
+        if regex_result.get("voyage") and regex_result["voyage"] != results["vessel_name"]:
+            results["voyage"] = regex_result["voyage"]
+            print(f"SUCCESS (Regex Voyage Backfill): Vessel='{results['vessel_name']}', Voyage='{results['voyage']}'")
+        else:
+            print("Regex voyage backfill did not find a valid voyage code.")
+
     return results
+
+
+
 
 
 def find_value_for_header_with_blacklist(
@@ -527,3 +610,240 @@ def extract_bol_port_of_destination(document: dict) -> Optional[str]:
     
     print("--- FAILED to find Port of Destination. ---")
     return None
+
+def extract_bol_consignee_by_regex(document) -> Optional[str]:
+    """
+    Fallback: extract consignee block purely from text,
+    between 'Consignee' and the next 'Notify Party' line.
+    """
+    text = document.text
+
+    m = re.search(
+        r'Consignee[^\n]*\n(.*?)(?=\nNotify Party)',  # stop right before the next 'Notify Party' line
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        return None
+
+    block = m.group(1).strip()
+
+    # Lines we *never* want in consignee details
+    EXCLUDE_PATTERNS = [
+        r"As principal, where",   # the exact junk line you showed
+        r"care of",               # catches "care of", "c/o", etc if they appear elsewhere
+    ]
+
+    cleaned_lines = []
+    for ln in block.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+
+        # Skip any line that matches one of our exclude patterns
+        if any(re.search(pat, s, re.IGNORECASE) for pat in EXCLUDE_PATTERNS):
+            continue
+
+        cleaned_lines.append(s)
+
+    return "\n".join(cleaned_lines) if cleaned_lines else None
+
+
+def extend_consignee_with_contact_lines(document, base_consignee: str) -> str:
+    """
+    Starting from the last line of the extracted consignee block, look
+    ahead in the raw document text and append contact lines like:
+      - Notify Party-USCI: ...
+      - Email: ...
+
+    Stops when it reaches the main Notify Party header or another section.
+    """
+    if not base_consignee:
+        return base_consignee
+
+    text = document.text
+    lines = base_consignee.split("\n")
+    last_line = lines[-1].strip()
+    if not last_line:
+        return base_consignee
+
+    # Find where that last line occurs in the linear OCR text
+    idx = text.find(last_line)
+    if idx == -1:
+        # If we can't locate it, just return the original block
+        return base_consignee
+
+    # Look ahead a bit after the last line (tune length if needed)
+    lookahead = text[idx + len(last_line): idx + len(last_line) + 600]
+
+    extra_lines: list[str] = []
+    for raw_line in lookahead.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        upper = line.upper()
+
+        # Stop when we hit the *next* Notify Party header or another big section
+        if "NOTIFY PARTY (SEE CLAUSE" in upper or upper.startswith("VESSEL "):
+            break
+
+        # Contact lines we want to attach to the consignee
+        if upper.startswith("NOTIFY PARTY-USCI") or upper.startswith("NOTIFY PARTY - USCI"):
+            extra_lines.append(line)
+            continue
+
+        if upper.startswith("EMAIL:"):
+            extra_lines.append(line)
+            continue
+
+    if extra_lines:
+        return base_consignee + "\n" + "\n".join(extra_lines)
+
+    return base_consignee
+
+
+
+def extract_bol_notify_by_regex(document) -> Optional[str]:
+    """
+    Fallback: extract notify party block between
+    'Notify Party (see clause 22)' and 'Vessel'.
+    """
+    text = document.text
+
+    m = re.search(
+        r'Notify Party\s*\(see clause 22\)[^\n]*\n(.*?)(?=\nVessel\b|\nVessel\s*\(see|\Z)',
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        return None
+
+    block = m.group(1).strip()
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+    return "\n".join(lines) if lines else None
+
+def is_plausible_vessel_name(name: Optional[str]) -> bool:
+    """
+    Heuristic check to see if a vessel name looks reasonable.
+    We reject:
+    - Very long sentences
+    - Lines containing obviously non-vessel words (payment, preconditions, URLs, etc.)
+    """
+    if not name:
+        return False
+
+    s = name.strip()
+    if not s:
+        return False
+
+    # Too long ⇒ likely sentence, not a ship name
+    if len(s) > 40:
+        return False
+
+    junk_keywords = [
+        "payment",
+        "precondition",
+        "preconditions",
+        "support",
+        "customer",
+        "reference(s)",
+        "verify copy approval",
+        "maersk.com",
+        "http",
+        "https",
+        "details available here",
+    ]
+    lower_s = s.lower()
+    if any(k in lower_s for k in junk_keywords):
+        return False
+
+    return True
+
+def extract_bol_vessel_voyage_regex(document) -> Dict[str, Optional[str]]:
+    """
+    Text-based fallback: extracts vessel & voyage using text only.
+    Handles both:
+      - 'Vessel (see ...)\\nTOCONAO\\nVoyage No.\\n532N'
+      - 'Vessel\\nVoyage No.\\nMAERSK FELIXSTOWE\\n...\\n528N'
+    """
+    text = document.text
+    result = {"vessel_name": None, "voyage": None}
+
+    # --- Vessel name: line between 'Vessel' and 'Voyage' (original logic) ---
+    m_vessel_block = re.search(
+        r"Vessel[^\n]*\n([^\n]+)\n\s*Voyage",
+        text,
+        re.IGNORECASE,
+    )
+    if m_vessel_block:
+        vessel_candidate = m_vessel_block.group(1).strip()
+        if vessel_candidate:
+            result["vessel_name"] = vessel_candidate
+
+    # --- Voyage: try to find a code near the 'Voyage' header ---
+
+    lines = text.splitlines()
+    voyage_code: Optional[str] = None
+
+    # Attempt 1: look at the line immediately after 'Voyage No.'
+    m_voy = re.search(
+        r"Voyage\s*No\.?\s*\n([^\n]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if m_voy:
+        raw_after_voy = m_voy.group(1).strip()
+        voyage_code = find_voyage_code_final(raw_after_voy)
+
+    # Attempt 2: if that failed (e.g. line is 'MAERSK FELIXSTOWE'), scan a small window
+    if voyage_code is None:
+        idx = None
+        for i, line in enumerate(lines):
+            if re.search(r"\bVoyage\b", line, re.IGNORECASE):
+                idx = i
+                break
+
+        if idx is not None:
+            # Look at the next ~5 lines after the 'Voyage' header
+            window_text = " ".join(lines[idx + 1: idx + 6])
+            voyage_code = find_voyage_code_final(window_text)
+
+    if voyage_code:
+        result["voyage"] = voyage_code
+
+    return result
+
+
+def clean_exporter_address_block(block: Optional[str]) -> Optional[str]:
+    """
+    Remove phone/email/contact lines from the exporter block while
+    keeping the actual postal/address + VAT/Reg lines.
+    """
+    if not block:
+        return block
+
+    cleaned_lines = []
+    for line in block.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+
+        lower = s.lower()
+
+        # Drop obvious contact / comms lines
+        if '@' in s:
+            continue
+        if lower.startswith("tel") or lower.startswith("tel:"):
+            continue
+        if lower.startswith("phone") or lower.startswith("phone:"):
+            continue
+        if lower.startswith("fax") or lower.startswith("fax:"):
+            continue
+        # Lines that are just a phone number like "+27 ..." etc.
+        if re.match(r'^\+?\d', s) and not re.search(r'[A-Za-z]', s):
+            continue
+
+        cleaned_lines.append(s)
+
+    return "\n".join(cleaned_lines) if cleaned_lines else None

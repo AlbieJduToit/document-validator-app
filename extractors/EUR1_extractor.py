@@ -272,11 +272,10 @@ def extract_eur1_item_details(document: dict) -> Dict[str, Optional[str]]:
 
                 # --- Regex for Cartons (find ALL and sum them) ---
                 # re.findall will return a list of all matching numbers, e.g., ['345', '20']
-                carton_matches = re.findall(r'(\d+)\s+CARTONS', full_text, re.IGNORECASE)
+                carton_matches = re.findall(r'([\d.,]+)\s+CARTONS', full_text, re.IGNORECASE)
                 if carton_matches:
-                    # Convert all found strings to integers and sum them up
-                    total_cartons = sum(int(match) for match in carton_matches)
-                    results["cartons"] = str(total_cartons) # Store the final sum as a string
+                    total_cartons = sum(int(match.replace(',', '')) for match in carton_matches)
+                    results["cartons"] = str(total_cartons)
                     print(f"  - Found Carton Counts: {carton_matches}. Total: {results['cartons']}")
                 
                 # --- Regex for Container Number ---
@@ -295,10 +294,6 @@ def extract_eur1_item_details(document: dict) -> Dict[str, Optional[str]]:
 
 
 def extract_eur1_weights(document: dict) -> Dict[str, Optional[str]]:
-    """
-    Finds the vertical region containing the weights
-    and uses two independent and robust regexes to find the values.
-    """
     results = {"gross": None, "net": None}
     if not document.pages:
         return results
@@ -306,14 +301,12 @@ def extract_eur1_weights(document: dict) -> Dict[str, Optional[str]]:
     document_text = document.text
 
     for page in document.pages:
-        # Step 1: Find the vertical anchors
         start_anchor = find_line_by_substring(page, "8. Item number", document_text)
         stop_below_anchor = find_line_by_substring(page, "11. CUSTOMS ENDORSEMENT", document_text)
         
         if start_anchor and stop_below_anchor:
             print(f"Found required vertical weight anchors on Page {page.page_number}.")
             
-            # Step 2: Define the vertical search slice
             start_bbox = start_anchor.layout.bounding_poly
             stop_below_bbox = stop_below_anchor.layout.bounding_poly
             search_top_y = max(v.y for v in start_bbox.normalized_vertices)
@@ -321,7 +314,6 @@ def extract_eur1_weights(document: dict) -> Dict[str, Optional[str]]:
             
             print(f"Defined vertical search slice: y=({search_top_y:.3f}, {search_bottom_y:.3f})")
 
-            # Step 3: Collect ALL lines within the vertical slice
             found_lines = []
             for line in page.lines:
                 line_bbox = line.layout.bounding_poly
@@ -331,24 +323,22 @@ def extract_eur1_weights(document: dict) -> Dict[str, Optional[str]]:
                     if line_text:
                         found_lines.append(line_text)
 
-            # Step 4: Parse the collected "haystack" of text
             if found_lines:
                 full_text = " ".join(found_lines)
                 print(f"  - Analyzing combined text block: '{full_text}'")
 
-                # Regex for NETT (this one is reliable and strict)
+                # NET: only if docs actually have "NETT"
                 net_match = re.search(r'([\d,.]+)\s*KG\s*NETT', full_text, re.IGNORECASE)
                 if net_match:
                     results["net"] = net_match.group(1).replace(',', '')
                     print(f"  - Found Net Weight: {results['net']}")
 
-                # A MORE FORGIVING regex for GROSS
-                # It looks for a number, then KG, then any characters (.*?), then GROSS.
-                gross_match = re.search(r'([\d,.]+)\s*KG.*?\s*GROSS', full_text, re.IGNORECASE)
+                # GROSS: first KG number in this region
+                gross_match = re.search(r'([\d,.]+)\s*KG\b', full_text, re.IGNORECASE)
                 if gross_match:
                     results["gross"] = gross_match.group(1).replace(',', '')
                     print(f"  - Found Gross Weight: {results['gross']}")
-                
+
                 return results
             else:
                 print("No lines found within the vertical slice.")

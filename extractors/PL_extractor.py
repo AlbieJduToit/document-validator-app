@@ -46,9 +46,27 @@ def extract_pl_data(document):
     }
 
     extracted_data['exporter_address'] = extract_exporter_address(document)
-    extracted_data["consignee_details"] = form_data.get("consignee")
-    extracted_data["invoice_party_details"] = form_data.get("invoice party")
-    extracted_data["notify_party_details"] = form_data.get("notify party")
+    consignee = form_data.get("consignee")
+    if not consignee or consignee.strip().upper() == "COMPANY":
+        fallback = extract_party_block_for_label(document, "Consignee")
+        if fallback:
+            consignee = fallback
+    extracted_data["consignee_details"] = consignee
+
+    invoice_party = form_data.get("invoice party")
+    if not invoice_party or invoice_party.strip().upper() == "COMPANY":
+        fallback = extract_party_block_for_label(document, "Invoice Party")
+        if fallback:
+            invoice_party = fallback
+    extracted_data["invoice_party_details"] = invoice_party
+
+    notify_party = form_data.get("notify party")
+    if not notify_party or notify_party.strip().upper() == "COMPANY":
+        fallback = extract_party_block_for_label(document, "Notify Party")
+        if fallback:
+            notify_party = fallback
+    extracted_data["notify_party_details"] = notify_party
+
     extracted_data["container_number"] = form_data.get("container no:")
     extracted_data["vessel_name"] = form_data.get("vessel:")
     extracted_data["port_of_destination"] = form_data.get("p.o.d:")
@@ -74,10 +92,11 @@ def get_block_center_x(block):
     return (min(v.x for v in vertices) + max(v.x for v in vertices)) / 2
 
 def find_line_by_substring(page, substring: str, document_text: str):
-    """Finds the first line on a page containing a specific substring."""
+    """Finds the first line on a page containing a specific substring (case-insensitive)."""
+    target = substring.lower()
     for line in page.lines:
         line_text = get_text(line.layout.text_anchor, document_text)
-        if substring in line_text:
+        if target in line_text.lower():
             return line
     return None
 
@@ -241,3 +260,91 @@ def extract_summary_totals(document: dict) -> dict:
 
     print(f"Final results by order: {results}")
     return results
+
+
+def extract_party_block_for_label(document: dict, label_keyword: str) -> Optional[str]:
+    """
+    Finds the party block around a label like 'Consignee', 'Invoice Party', or 'Notify Party'.
+
+    Strategy:
+    - Find the anchor line containing the label.
+    - In the same column, take the closest line ABOVE and the closest line BELOW the anchor.
+    - Join those lines (e.g. 'HOANG THO FRUITS JOINT STOCK\\nCOMPANY').
+    """
+    if not document.pages:
+        return None
+
+    document_text = document.text
+
+    for page in document.pages:
+        anchor_line = find_line_by_substring(page, label_keyword, document_text)
+        if not anchor_line:
+            continue
+
+        # Anchor geometry
+        anchor_bbox = anchor_line.layout.bounding_poly
+        anchor_center_x = (
+            min(v.x for v in anchor_bbox.normalized_vertices)
+            + max(v.x for v in anchor_bbox.normalized_vertices)
+        ) / 2.0
+        anchor_center_y = (
+            min(v.y for v in anchor_bbox.normalized_vertices)
+            + max(v.y for v in anchor_bbox.normalized_vertices)
+        ) / 2.0
+
+        column_tolerance = 0.20   # how wide the "column" is around the label
+        vertical_window = 0.06    # how far up/down we look
+
+        best_above = None  # (distance, text)
+        best_below = None  # (distance, text)
+
+        for line in page.lines:
+            if line == anchor_line:
+                continue
+            if not line.layout.bounding_poly.normalized_vertices:
+                continue
+
+            line_bbox = line.layout.bounding_poly
+            line_center_x = (
+                min(v.x for v in line_bbox.normalized_vertices)
+                + max(v.x for v in line_bbox.normalized_vertices)
+            ) / 2.0
+            line_center_y = (
+                min(v.y for v in line_bbox.normalized_vertices)
+                + max(v.y for v in line_bbox.normalized_vertices)
+            ) / 2.0
+
+            # Filter: same column and within the vertical window
+            if abs(line_center_x - anchor_center_x) > column_tolerance:
+                continue
+            dy = line_center_y - anchor_center_y
+            if abs(dy) > vertical_window:
+                continue
+
+            line_text = get_text(line.layout.text_anchor, document_text)
+            if not line_text:
+                continue
+
+            # Ignore the label itself if OCR fused it
+            if label_keyword.lower() in line_text.lower():
+                continue
+
+            if dy < 0:  # above
+                dist = abs(dy)
+                if best_above is None or dist < best_above[0]:
+                    best_above = (dist, line_text)
+            else:       # below
+                dist = abs(dy)
+                if best_below is None or dist < best_below[0]:
+                    best_below = (dist, line_text)
+
+        lines = []
+        if best_above:
+            lines.append(best_above[1])
+        if best_below:
+            lines.append(best_below[1])
+
+        if lines:
+            return "\n".join(lines)
+
+    return None

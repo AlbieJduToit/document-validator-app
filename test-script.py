@@ -1,4 +1,4 @@
-from processors.google_helper import write_to_tempfile
+#from processors.google_helper import write_to_tempfile
 from processors.parsers import process_document_sample, process_cleaned_image_bytes
 from dotenv import load_dotenv
 from extractors.CI_extractor import extract_invoice_data
@@ -15,7 +15,7 @@ import os
 from google.protobuf import json_format
 from google.cloud.documentai_v1.types import Document
 import json
-from extractors.PL_extractor import get_form_key_value_pairs
+#from extractors.PL_extractor import get_form_key_value_pairs
 import logging
 import sys
 
@@ -34,7 +34,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-local_pdf = "EXPORT CERT - L50S-007.pdf"
+local_pdf = "Draft SWB (12).pdf"
 
 logger.info(f"Reading file bytes from: {local_pdf}")
 with open(local_pdf, "rb") as f:
@@ -49,6 +49,8 @@ agent_document = process_document_sample(
     mime_type="application/pdf"
 )
 
-extracted = extract_ppecb_data(agent_document)
+extracted = extract_bol_data(agent_document)
+extracted_agent = run_bol_extraction_agent(agent_document, project_id)
 
 print(json.dumps(extracted, indent=2))
+print(json.dumps(extracted_agent, indent=2))
